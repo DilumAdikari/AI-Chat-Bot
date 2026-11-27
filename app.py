@@ -19,34 +19,40 @@ st.set_page_config(
     layout="wide",
 )
 
+FALLBACK_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemma-4-26b-a4b-it",
+    "gemma-4-31b-it",
+    "gemini-2.5-pro",
+]
+
 
 @st.cache_data(ttl=600)
 def get_available_models() -> list[str]:
-    preferred_order = [
-        "gemini-3.8-flash",
-        "gemini-3.8-flash-lite",
-        "gemini-3.8-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemma-3-27b-it",
-        "gemma-3-12b-it",
-    ]
-    available = []
+    found = []
     try:
         for m in client.models.list():
-            name = m.name.replace("models/", "")
-            methods = getattr(m, "supported_generation_methods", []) or []
-            if "generateContent" in methods and ("gemini" in name or "gemma" in name):
-                if "embedding" not in name and "image" not in name and "tts" not in name:
-                    available.append(name)
+            name = (m.name or "").replace("models/", "")
+            if not name:
+                continue
+            if any(skip in name for skip in ("embedding", "image", "tts", "veo", "imagen", "deep-research")):
+                continue
+            if name.startswith(("gemini-", "gemma-")):
+                found.append(name)
     except Exception:
-        return preferred_order
+        return FALLBACK_MODELS
 
-    ordered = [m for m in preferred_order if m in available]
-    for m in available:
+    if not found:
+        return FALLBACK_MODELS
+
+    ordered = [m for m in FALLBACK_MODELS if m in found]
+    for m in found:
         if m not in ordered:
             ordered.append(m)
-    return ordered or preferred_order
+    return ordered
 
 
 AVAILABLE_MODELS = get_available_models()
@@ -106,10 +112,9 @@ def stream_with_instant_fallback(history: list[dict], preferred_model: str, sele
     contents = build_contents(history)
     sys_prompt = build_system_instruction(selected_mode)
 
-    last_error = ""
-    for model_name in models_queue[:6]:
+    errors = []
+    for model_name in models_queue:
         try:
-            # Gemma models samahara welawata system_instruction support nokarana nisa eka handle karanawa
             if model_name.startswith("gemma"):
                 merged_contents = [
                     types.Content(
@@ -121,38 +126,36 @@ def stream_with_instant_fallback(history: list[dict], preferred_model: str, sele
                         parts=[types.Part.from_text(text="Understood. I will follow these instructions.")],
                     ),
                 ] + contents
-                config = types.GenerateContentConfig(temperature=0.6)
                 stream = client.models.generate_content_stream(
                     model=model_name,
                     contents=merged_contents,
-                    config=config,
+                    config=types.GenerateContentConfig(temperature=0.6),
                 )
             else:
-                config = types.GenerateContentConfig(
-                    system_instruction=sys_prompt,
-                    temperature=0.6,
-                )
                 stream = client.models.generate_content_stream(
                     model=model_name,
                     contents=contents,
-                    config=config,
+                    config=types.GenerateContentConfig(
+                        system_instruction=sys_prompt,
+                        temperature=0.6,
+                    ),
                 )
 
-            got_chunk = False
+            chunks = []
             for chunk in stream:
                 if chunk.text:
-                    got_chunk = True
+                    chunks.append(chunk.text)
                     yield chunk.text
 
-            if got_chunk:
+            if chunks:
                 if model_name != preferred_model:
                     yield f"\n\n*(Answered using `{model_name}`)*"
                 return
         except Exception as e:
-            last_error = str(e)
+            errors.append(f"{model_name}: {e}")
             continue
 
-    yield f"Models okkoma danata busy ho unavailable. Last error: `{last_error}`"
+    yield "Kisi model ekakin reply ekak ganna bari una:\n\n" + "\n".join(f"- `{err}`" for err in errors[-3:])
 
 
 if "messages" not in st.session_state:
