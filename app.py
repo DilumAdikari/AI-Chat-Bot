@@ -97,29 +97,16 @@ def persist_current_chat() -> None:
     )
 
 
+engine_options = []
+if AVAILABLE_OLLAMA_MODELS:
+    engine_options.append("Local Ollama")
+if AVAILABLE_GEMINI_MODELS:
+    engine_options.append("Gemini Cloud")
+
+
+# --- Sidebar: Mode, New Chat & History ---
 with st.sidebar:
-    st.header(" Assistant Settings")
-
-    engine_options = []
-    if AVAILABLE_OLLAMA_MODELS:
-        engine_options.append("Local Ollama (Unlimited Free)")
-    if AVAILABLE_GEMINI_MODELS:
-        engine_options.append("Gemini Cloud (Auto-Fallback)")
-
-    selected_engine = st.radio("AI Engine", engine_options, index=0)
-
-    if selected_engine.startswith("Local Ollama"):
-        selected_model = st.selectbox(
-            "Ollama Model",
-            AVAILABLE_OLLAMA_MODELS,
-            index=0,
-        )
-    else:
-        selected_model = st.selectbox(
-            "Preferred Gemini Model",
-            AVAILABLE_GEMINI_MODELS,
-            index=0,
-        )
+    st.header("Assistant Settings")
 
     mode = st.radio(
         "Response Mode",
@@ -169,7 +156,6 @@ with st.sidebar:
 
 
 st.title("🤖 AI Assistant")
-st.caption(f"Mode: **{mode}** • Engine: **{selected_engine}** • Model: `{selected_model}`")
 
 
 def build_system_instruction(selected_mode: str) -> str:
@@ -269,35 +255,37 @@ def stream_gemini_with_fallback(history: list[dict], preferred_model: str, sys_p
     return None
 
 
-def stream_unified_response(history: list[dict], engine: str, preferred_model: str, selected_mode: str):
+def stream_unified_response(history: list[dict], engine: str, selected_mode: str):
     sys_prompt = build_system_instruction(selected_mode)
+    preferred_ollama = AVAILABLE_OLLAMA_MODELS[0] if AVAILABLE_OLLAMA_MODELS else ""
+    preferred_gemini = AVAILABLE_GEMINI_MODELS[0] if AVAILABLE_GEMINI_MODELS else ""
 
-    if engine.startswith("Local Ollama"):
+    if engine.startswith("Local Ollama") and preferred_ollama:
         try:
-            ok = yield from stream_ollama(history, sys_prompt, preferred_model)
+            ok = yield from stream_ollama(history, sys_prompt, preferred_ollama)
             if ok:
                 return
         except Exception as e:
-            if AVAILABLE_GEMINI_MODELS:
-                used = yield from stream_gemini_with_fallback(history, AVAILABLE_GEMINI_MODELS[0], sys_prompt)
+            if preferred_gemini:
+                used = yield from stream_gemini_with_fallback(history, preferred_gemini, sys_prompt)
                 if used:
                     yield f"\n\n*(Switched to Gemini `{used}`)*"
                     return
             yield f"Ollama error: `{e}`"
             return
 
-    used_gemini = yield from stream_gemini_with_fallback(history, preferred_model, sys_prompt)
-    if used_gemini:
-        if used_gemini != preferred_model:
-            yield f"\n\n*(Answered using `{used_gemini}`)*"
-        return
+    if preferred_gemini:
+        used_gemini = yield from stream_gemini_with_fallback(history, preferred_gemini, sys_prompt)
+        if used_gemini:
+            if used_gemini != preferred_gemini:
+                yield f"\n\n*(Answered using `{used_gemini}`)*"
+            return
 
-    if AVAILABLE_OLLAMA_MODELS:
+    if preferred_ollama:
         try:
-            fallback_ollama = AVAILABLE_OLLAMA_MODELS[0]
-            ok = yield from stream_ollama(history, sys_prompt, fallback_ollama)
+            ok = yield from stream_ollama(history, sys_prompt, preferred_ollama)
             if ok:
-                yield f"\n\n*(Gemini busy — answered using Local Ollama `{fallback_ollama}`)*"
+                yield f"\n\n*(Gemini busy — answered using Local Ollama `{preferred_ollama}`)*"
                 return
         except Exception:
             pass
@@ -305,9 +293,70 @@ def stream_unified_response(history: list[dict], engine: str, preferred_model: s
     yield "Configured models okkoma danata busy ho unavailable. Ollama run wenawada balanna naththam tika welawakin try karanna."
 
 
+# --- Render Chat Messages ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+st.markdown("<div style='height: 135px;'></div>", unsafe_allow_html=True)
+
+# --- Right-Aligned Engine Pill Above Chat Input (No Model Dropdown) ---
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-bottom: 9rem !important;
+    }
+    .st-key-right_engine_pill {
+        position: fixed;
+        bottom: 82px;
+        right: 3.5rem;
+        width: 175px;
+        z-index: 998;
+    }
+    .st-key-right_engine_pill [data-testid="stSelectbox"] > div > div {
+        background-color: #26282c !important;
+        border-radius: 999px !important;
+        border: 1px solid rgba(255, 255, 255, 0.12) !important;
+        min-height: 30px !important;
+        height: 30px !important;
+        font-size: 0.78rem !important;
+    }
+    .st-key-right_engine_pill [data-testid="stSelectbox"] {
+        margin-bottom: 0 !important;
+    }
+    div[data-testid="stBottom"] {
+        background: transparent !important;
+        padding-bottom: 0.85rem !important;
+    }
+    div[data-testid="stBottom"] > div {
+        max-width: 780px;
+        margin: 0 auto;
+    }
+    div[data-testid="stChatInput"] > div {
+        background-color: #1e1f20 !important;
+        border: 1px solid rgba(255, 255, 255, 0.09) !important;
+        border-radius: 28px !important;
+    }
+    @media (max-width: 900px) {
+        .st-key-right_engine_pill {
+            right: 1.5rem;
+            width: 150px;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.container(key="right_engine_pill"):
+    selected_engine = st.selectbox(
+        "AI Engine",
+        engine_options,
+        index=0,
+        key="final_right_engine_select",
+        label_visibility="collapsed",
+    )
 
 if prompt := st.chat_input("Ask anything or paste code/errors..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -318,9 +367,7 @@ if prompt := st.chat_input("Ask anything or paste code/errors..."):
 
     with st.chat_message("assistant"):
         reply_text = st.write_stream(
-            stream_unified_response(
-                st.session_state.messages, selected_engine, selected_model, mode
-            )
+            stream_unified_response(st.session_state.messages, selected_engine, mode)
         )
 
     st.session_state.messages.append({"role": "assistant", "content": reply_text})
