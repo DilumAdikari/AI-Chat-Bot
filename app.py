@@ -285,7 +285,7 @@ def stream_unified_response(history: list[dict], engine: str, selected_mode: str
         try:
             ok = yield from stream_ollama(history, sys_prompt, preferred_ollama)
             if ok:
-                yield f"\n\n*(Gemini busy — answered using Local Ollama `{preferred_ollama}`)*"
+                yield f"\n\n*(Gemini busy — answered using Local Ollama `{fallback_ollama}`)*"
                 return
         except Exception:
             pass
@@ -298,50 +298,64 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-st.markdown("<div style='height: 135px;'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height: 110px;'></div>", unsafe_allow_html=True)
 
-# --- Right-Aligned Engine Pill Above Chat Input (No Model Dropdown) ---
+# --- Gemini-Style Pill Bar with Engine Selector Aligned Beside Send Button ---
 st.markdown(
     """
     <style>
     .block-container {
-        padding-bottom: 9rem !important;
-    }
-    .st-key-right_engine_pill {
-        position: fixed;
-        bottom: 82px;
-        right: 3.5rem;
-        width: 175px;
-        z-index: 998;
-    }
-    .st-key-right_engine_pill [data-testid="stSelectbox"] > div > div {
-        background-color: #26282c !important;
-        border-radius: 999px !important;
-        border: 1px solid rgba(255, 255, 255, 0.12) !important;
-        min-height: 30px !important;
-        height: 30px !important;
-        font-size: 0.78rem !important;
-    }
-    .st-key-right_engine_pill [data-testid="stSelectbox"] {
-        margin-bottom: 0 !important;
+        padding-bottom: 7.5rem !important;
     }
     div[data-testid="stBottom"] {
         background: transparent !important;
-        padding-bottom: 0.85rem !important;
+        padding-bottom: 0.9rem !important;
     }
     div[data-testid="stBottom"] > div {
-        max-width: 780px;
+        max-width: 820px;
         margin: 0 auto;
     }
     div[data-testid="stChatInput"] > div {
         background-color: #1e1f20 !important;
         border: 1px solid rgba(255, 255, 255, 0.09) !important;
-        border-radius: 28px !important;
+        border-radius: 999px !important;
+        padding-right: 11.5rem !important;
+        min-height: 54px !important;
+        align-items: center !important;
+    }
+    div[data-testid="stChatInput"] textarea {
+        padding-top: 0.85rem !important;
+        padding-bottom: 0.85rem !important;
+        font-size: 0.92rem !important;
+    }
+    .st-key-inline_engine_pill {
+        position: fixed;
+        bottom: 24px;
+        right: calc((100% - 17rem - min(820px, 100% - 20rem)) / 2 + 3.4rem);
+        width: 148px;
+        z-index: 999;
+    }
+    .st-key-inline_engine_pill [data-testid="stSelectbox"] > div > div {
+        background-color: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        min-height: 32px !important;
+        height: 32px !important;
+        font-size: 0.84rem !important;
+        font-weight: 500 !important;
+        color: #e3e3e3 !important;
+    }
+    .st-key-inline_engine_pill [data-testid="stSelectbox"] > div > div:hover {
+        background-color: rgba(255, 255, 255, 0.06) !important;
+        border-radius: 999px !important;
+    }
+    .st-key-inline_engine_pill [data-testid="stSelectbox"] {
+        margin-bottom: 0 !important;
     }
     @media (max-width: 900px) {
-        .st-key-right_engine_pill {
-            right: 1.5rem;
-            width: 150px;
+        .st-key-inline_engine_pill {
+            right: 4.2rem;
+            width: 132px;
         }
     }
     </style>
@@ -349,12 +363,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.container(key="right_engine_pill"):
+with st.container(key="inline_engine_pill"):
     selected_engine = st.selectbox(
         "AI Engine",
         engine_options,
         index=0,
-        key="final_right_engine_select",
+        key="inline_1st_img_engine_select",
         label_visibility="collapsed",
     )
 
