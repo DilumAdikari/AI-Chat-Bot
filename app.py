@@ -6,12 +6,15 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from chat_manager import ChatHistoryManager
+
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+history_mgr = ChatHistoryManager("chat_history.json")
 
 st.set_page_config(
     page_title="AI Assistant",
@@ -76,6 +79,24 @@ if not AVAILABLE_GEMINI_MODELS and not AVAILABLE_OLLAMA_MODELS:
     st.error("GEMINI_API_KEY .env file eke add karanna naththam Ollama run karanna.")
     st.stop()
 
+if "all_chats" not in st.session_state:
+    st.session_state.all_chats = history_mgr.load_all()
+
+if "current_chat_id" not in st.session_state:
+    st.session_state.current_chat_id = history_mgr.generate_chat_id()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+
+def persist_current_chat() -> None:
+    st.session_state.all_chats = history_mgr.upsert_chat(
+        st.session_state.all_chats,
+        st.session_state.current_chat_id,
+        st.session_state.messages,
+    )
+
+
 with st.sidebar:
     st.header("⚙️ Assistant Settings")
 
@@ -110,9 +131,42 @@ with st.sidebar:
         ],
     )
 
-    if st.button("🔄 New Chat"):
-        st.session_state.pop("messages", None)
+    if st.button("➕ New Chat", use_container_width=True):
+        persist_current_chat()
+        st.session_state.current_chat_id = history_mgr.generate_chat_id()
+        st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+    st.subheader("💬 Chat History")
+
+    sorted_chat_ids = sorted(st.session_state.all_chats.keys(), reverse=True)
+    if not sorted_chat_ids:
+        st.caption("Thama saved chats na.")
+    else:
+        for cid in sorted_chat_ids:
+            chat_item = st.session_state.all_chats[cid]
+            title = chat_item.get("title", "Untitled Chat")
+            is_active = cid == st.session_state.current_chat_id
+
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                label = f"▶ {title}" if is_active else title
+                if st.button(label, key=f"load_{cid}", use_container_width=True):
+                    persist_current_chat()
+                    st.session_state.current_chat_id = cid
+                    st.session_state.messages = list(chat_item.get("messages", []))
+                    st.rerun()
+            with col2:
+                if st.button("🗑️", key=f"del_{cid}", help="Delete chat"):
+                    st.session_state.all_chats = history_mgr.delete_chat(
+                        st.session_state.all_chats, cid
+                    )
+                    if cid == st.session_state.current_chat_id:
+                        st.session_state.current_chat_id = history_mgr.generate_chat_id()
+                        st.session_state.messages = []
+                    st.rerun()
+
 
 st.title("🤖 AI Assistant")
 st.caption(f"Mode: **{mode}** • Engine: **{selected_engine}** • Model: `{selected_model}`")
@@ -140,7 +194,7 @@ def build_gemini_contents(history: list[dict]) -> list[types.Content]:
             role="user" if msg["role"] == "user" else "model",
             parts=[types.Part.from_text(text=msg["content"])],
         )
-        for m in history
+        for msg in history
     ]
 
 
@@ -251,15 +305,14 @@ def stream_unified_response(history: list[dict], engine: str, preferred_model: s
     yield "Configured models okkoma danata busy ho unavailable. Ollama run wenawada balanna naththam tika welawakin try karanna."
 
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 if prompt := st.chat_input("Ask anything or paste code/errors..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
+    persist_current_chat()
+
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -271,3 +324,5 @@ if prompt := st.chat_input("Ask anything or paste code/errors..."):
         )
 
     st.session_state.messages.append({"role": "assistant", "content": reply_text})
+    persist_current_chat()
+    st.rerun()
