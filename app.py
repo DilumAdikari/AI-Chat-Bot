@@ -1,4 +1,6 @@
+import json
 import os
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
@@ -6,20 +8,18 @@ from google.genai import types
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    st.error("GEMINI_API_KEY .env file eke hoyaganna ba. Karunakarala add karanna.")
-    st.stop()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 
-client = genai.Client(api_key=api_key)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 st.set_page_config(
-    page_title="General AI Assistant",
+    page_title="AI Assistant",
     page_icon="🤖",
     layout="wide",
 )
 
-FALLBACK_MODELS = [
+GEMINI_FALLBACK_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash",
     "gemini-2.5-flash",
@@ -31,10 +31,12 @@ FALLBACK_MODELS = [
 
 
 @st.cache_data(ttl=600)
-def get_available_models() -> list[str]:
+def get_available_gemini_models() -> list[str]:
+    if not gemini_client:
+        return []
     found = []
     try:
-        for m in client.models.list():
+        for m in gemini_client.models.list():
             name = (m.name or "").replace("models/", "")
             if not name:
                 continue
@@ -43,27 +45,61 @@ def get_available_models() -> list[str]:
             if name.startswith(("gemini-", "gemma-")):
                 found.append(name)
     except Exception:
-        return FALLBACK_MODELS
+        return GEMINI_FALLBACK_MODELS
 
     if not found:
-        return FALLBACK_MODELS
+        return GEMINI_FALLBACK_MODELS
 
-    ordered = [m for m in FALLBACK_MODELS if m in found]
+    ordered = [m for m in GEMINI_FALLBACK_MODELS if m in found]
     for m in found:
         if m not in ordered:
             ordered.append(m)
     return ordered
 
 
-AVAILABLE_MODELS = get_available_models()
+def get_available_ollama_models() -> list[str]:
+    try:
+        resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
+        if resp.status_code == 200:
+            models = [m["name"] for m in resp.json().get("models", []) if m.get("name")]
+            if models:
+                return models
+    except Exception:
+        pass
+    return []
+
+
+AVAILABLE_GEMINI_MODELS = get_available_gemini_models()
+AVAILABLE_OLLAMA_MODELS = get_available_ollama_models()
+
+if not AVAILABLE_GEMINI_MODELS and not AVAILABLE_OLLAMA_MODELS:
+    st.error("GEMINI_API_KEY .env file eke add karanna naththam Ollama run karanna.")
+    st.stop()
 
 with st.sidebar:
     st.header("⚙️ Assistant Settings")
-    selected_model = st.selectbox(
-        "Model (Auto-Fallback Enabled)",
-        AVAILABLE_MODELS,
-        index=0,
-    )
+
+    engine_options = []
+    if AVAILABLE_OLLAMA_MODELS:
+        engine_options.append("Local Ollama (Unlimited Free)")
+    if AVAILABLE_GEMINI_MODELS:
+        engine_options.append("Gemini Cloud (Auto-Fallback)")
+
+    selected_engine = st.radio("AI Engine", engine_options, index=0)
+
+    if selected_engine.startswith("Local Ollama"):
+        selected_model = st.selectbox(
+            "Ollama Model",
+            AVAILABLE_OLLAMA_MODELS,
+            index=0,
+        )
+    else:
+        selected_model = st.selectbox(
+            "Preferred Gemini Model",
+            AVAILABLE_GEMINI_MODELS,
+            index=0,
+        )
+
     mode = st.radio(
         "Response Mode",
         [
@@ -73,12 +109,13 @@ with st.sidebar:
             "Brainstorm & Ideas",
         ],
     )
+
     if st.button("🔄 New Chat"):
         st.session_state.pop("messages", None)
         st.rerun()
 
 st.title("🤖 AI Assistant")
-st.caption(f"Mode: **{mode}** • Preferred Model: `{selected_model}`")
+st.caption(f"Mode: **{mode}** • Engine: **{selected_engine}** • Model: `{selected_model}`")
 
 
 def build_system_instruction(selected_mode: str) -> str:
@@ -97,22 +134,46 @@ Core guidelines:
 """
 
 
-def build_contents(history: list[dict]) -> list[types.Content]:
-    contents = []
-    for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        contents.append(
-            types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])])
+def build_gemini_contents(history: list[dict]) -> list[types.Content]:
+    return [
+        types.Content(
+            role="user" if msg["role"] == "user" else "model",
+            parts=[types.Part.from_text(text=msg["content"])],
         )
-    return contents
+        for m in history
+    ]
 
 
-def stream_with_instant_fallback(history: list[dict], preferred_model: str, selected_mode: str):
-    models_queue = [preferred_model] + [m for m in AVAILABLE_MODELS if m != preferred_model]
-    contents = build_contents(history)
-    sys_prompt = build_system_instruction(selected_mode)
+def stream_ollama(history: list[dict], sys_prompt: str, model_name: str):
+    messages = [{"role": "system", "content": sys_prompt}] + [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
+    resp = requests.post(
+        f"{OLLAMA_BASE_URL}/api/chat",
+        json={"model": model_name, "messages": messages, "stream": True},
+        stream=True,
+        timeout=90,
+    )
+    resp.raise_for_status()
 
-    errors = []
+    yielded = False
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        data = json.loads(line)
+        content = data.get("message", {}).get("content")
+        if content:
+            yielded = True
+            yield content
+    return yielded
+
+
+def stream_gemini_with_fallback(history: list[dict], preferred_model: str, sys_prompt: str):
+    if not AVAILABLE_GEMINI_MODELS:
+        return None
+    models_queue = [preferred_model] + [m for m in AVAILABLE_GEMINI_MODELS if m != preferred_model]
+    contents = build_gemini_contents(history)
+
     for model_name in models_queue:
         try:
             if model_name.startswith("gemma"):
@@ -126,13 +187,13 @@ def stream_with_instant_fallback(history: list[dict], preferred_model: str, sele
                         parts=[types.Part.from_text(text="Understood. I will follow these instructions.")],
                     ),
                 ] + contents
-                stream = client.models.generate_content_stream(
+                stream = gemini_client.models.generate_content_stream(
                     model=model_name,
                     contents=merged_contents,
                     config=types.GenerateContentConfig(temperature=0.6),
                 )
             else:
-                stream = client.models.generate_content_stream(
+                stream = gemini_client.models.generate_content_stream(
                     model=model_name,
                     contents=contents,
                     config=types.GenerateContentConfig(
@@ -148,14 +209,46 @@ def stream_with_instant_fallback(history: list[dict], preferred_model: str, sele
                     yield chunk.text
 
             if chunks:
-                if model_name != preferred_model:
-                    yield f"\n\n*(Answered using `{model_name}`)*"
+                return model_name
+        except Exception:
+            continue
+    return None
+
+
+def stream_unified_response(history: list[dict], engine: str, preferred_model: str, selected_mode: str):
+    sys_prompt = build_system_instruction(selected_mode)
+
+    if engine.startswith("Local Ollama"):
+        try:
+            ok = yield from stream_ollama(history, sys_prompt, preferred_model)
+            if ok:
                 return
         except Exception as e:
-            errors.append(f"{model_name}: {e}")
-            continue
+            if AVAILABLE_GEMINI_MODELS:
+                used = yield from stream_gemini_with_fallback(history, AVAILABLE_GEMINI_MODELS[0], sys_prompt)
+                if used:
+                    yield f"\n\n*(Switched to Gemini `{used}`)*"
+                    return
+            yield f"Ollama error: `{e}`"
+            return
 
-    yield "Kisi model ekakin reply ekak ganna bari una:\n\n" + "\n".join(f"- `{err}`" for err in errors[-3:])
+    used_gemini = yield from stream_gemini_with_fallback(history, preferred_model, sys_prompt)
+    if used_gemini:
+        if used_gemini != preferred_model:
+            yield f"\n\n*(Answered using `{used_gemini}`)*"
+        return
+
+    if AVAILABLE_OLLAMA_MODELS:
+        try:
+            fallback_ollama = AVAILABLE_OLLAMA_MODELS[0]
+            ok = yield from stream_ollama(history, sys_prompt, fallback_ollama)
+            if ok:
+                yield f"\n\n*(Gemini busy — answered using Local Ollama `{fallback_ollama}`)*"
+                return
+        except Exception:
+            pass
+
+    yield "Configured models okkoma danata busy ho unavailable. Ollama run wenawada balanna naththam tika welawakin try karanna."
 
 
 if "messages" not in st.session_state:
@@ -172,8 +265,8 @@ if prompt := st.chat_input("Ask anything or paste code/errors..."):
 
     with st.chat_message("assistant"):
         reply_text = st.write_stream(
-            stream_with_instant_fallback(
-                st.session_state.messages, selected_model, mode
+            stream_unified_response(
+                st.session_state.messages, selected_engine, selected_model, mode
             )
         )
 
