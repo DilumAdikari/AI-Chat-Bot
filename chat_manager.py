@@ -1,26 +1,41 @@
 import json
-import os
 from datetime import datetime
 from typing import Any
 
+from db import DEFAULT_DB_PATH, db_session, init_db
+
 
 class ChatHistoryManager:
-    def __init__(self, file_path: str = "chat_history.json") -> None:
-        self.file_path = file_path
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        init_db(self.db_path)
 
     def load_all(self) -> dict[str, dict[str, Any]]:
-        if not os.path.exists(self.file_path):
-            return {}
-        try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+        chats: dict[str, dict[str, Any]] = {}
+        with db_session(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT chat_id, title, created_at, updated_at, messages_json
+                FROM chats
+                ORDER BY chat_id DESC
+                """
+            ).fetchall()
 
-    def save_all(self, chats: dict[str, dict[str, Any]]) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(chats, f, indent=2, ensure_ascii=False)
+        for row in rows:
+            try:
+                messages = json.loads(row["messages_json"])
+                if not isinstance(messages, list):
+                    messages = []
+            except Exception:
+                messages = []
+
+            chats[row["chat_id"]] = {
+                "title": row["title"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "messages": messages,
+            }
+        return chats
 
     @staticmethod
     def generate_chat_id() -> str:
@@ -31,7 +46,7 @@ class ChatHistoryManager:
         for msg in messages:
             if msg.get("role") == "user" and msg.get("content", "").strip():
                 cleaned = " ".join(msg["content"].strip().split())
-                return (cleaned[:36] + "...") if len(cleaned) > 36 else cleaned
+                return (cleaned[:36] + "...") if len(clean := cleaned) > 36 else clean
         return "New Chat"
 
     def upsert_chat(
@@ -45,14 +60,28 @@ class ChatHistoryManager:
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         created_at = chats.get(chat_id, {}).get("created_at", now_str)
+        title = self.build_title(messages)
+        messages_json = json.dumps(messages, ensure_ascii=False)
+
+        with db_session(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO chats (chat_id, title, created_at, updated_at, messages_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    title = excluded.title,
+                    updated_at = excluded.updated_at,
+                    messages_json = excluded.messages_json
+                """,
+                (chat_id, title, created_at, now_str, messages_json),
+            )
 
         chats[chat_id] = {
-            "title": self.build_title(messages),
+            "title": title,
             "created_at": created_at,
             "updated_at": now_str,
             "messages": messages,
         }
-        self.save_all(chats)
         return chats
 
     def delete_chat(
@@ -60,6 +89,8 @@ class ChatHistoryManager:
         chats: dict[str, dict[str, Any]],
         chat_id: str,
     ) -> dict[str, dict[str, Any]]:
+        with db_session(self.db_path) as conn:
+            conn.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
+
         chats.pop(chat_id, None)
-        self.save_all(chats)
         return chats

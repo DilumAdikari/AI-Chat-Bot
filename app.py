@@ -14,11 +14,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-history_mgr = ChatHistoryManager("chat_history.json")
+history_mgr = ChatHistoryManager("chat_history.db")
 
 st.set_page_config(
-    page_title="AI Assistant",
-    page_icon="🤖",
+    page_title="AI Chat Bot",
+    page_icon="",
     layout="wide",
 )
 
@@ -98,7 +98,7 @@ def persist_current_chat() -> None:
 
 
 with st.sidebar:
-    st.header("⚙️ Assistant Settings")
+    st.header(" Assistant Settings")
 
     engine_options = []
     if AVAILABLE_OLLAMA_MODELS:
@@ -142,7 +142,7 @@ with st.sidebar:
 
     sorted_chat_ids = sorted(st.session_state.all_chats.keys(), reverse=True)
     if not sorted_chat_ids:
-        st.caption("Thama saved chats na.")
+        st.caption("Not saved chat.")
     else:
         for cid in sorted_chat_ids:
             chat_item = st.session_state.all_chats[cid]
